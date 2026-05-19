@@ -20,11 +20,12 @@ Based on the pattern described in [Embedding Genie API for a Multi-Tenant Applic
 ```
 multi-tenant-genie/
 ├── notebooks/
-│   ├── 01_setup.sql           Provision catalog/schema, tables, ACL, function, row filter
-│   ├── 02_demo_row_filter.sql Live-demo the ACL → visibility behavior in SQL
-│   └── 03_query_genie.py      Query a Genie Space via the Conversation API
+│   ├── 01_setup.sql              Provision catalog/schema, tables, ACL, function, row filter
+│   ├── 02_demo_row_filter.sql    Live-demo the ACL → visibility behavior in SQL
+│   ├── 03_query_genie.py         Query a Genie Space via the Conversation API
+│   └── 04_provision_tenant.py    End-to-end: SP + OAuth secret + ACL + Genie call as the SP
 └── genie/
-    └── instructions.md        Paste these into your Genie Space "Instructions" panel
+    └── instructions.md           Paste these into your Genie Space "Instructions" panel
 ```
 
 All notebooks accept widget parameters (`catalog`, `schema`) so the demo is reusable across workspaces and customers.
@@ -59,6 +60,12 @@ The row filter is already on the table — Genie will inherit it automatically.
 ### 4. Run `03_query_genie.py`
 
 Asks the Genie Space a question via the Conversation API and prints the SQL + results. Run it twice with different ACL state between runs to demonstrate that **the same Genie question returns different data depending on who's allowed to see what**.
+
+### 5. (Optional) Run `04_provision_tenant.py`
+
+The realistic end-to-end. Provisions a service principal for one tenant, generates its OAuth M2M client secret, grants it the minimum permissions (UC, warehouse, Genie space), inserts its ACL row, mints an access token via the OAuth client-credentials flow, and calls Genie *as that SP*. Shows the same question returning different rows when called as the tenant SP vs. as you.
+
+This is the closest thing to the code your customer's engineers would actually write. Requires workspace admin to run (creates SPs and grants permissions).
 
 ---
 
