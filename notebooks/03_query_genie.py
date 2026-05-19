@@ -15,6 +15,17 @@
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Install a recent databricks-sdk
+# MAGIC The default runtime SDK predates `w.genie`. Upgrade and restart Python.
+
+# COMMAND ----------
+
+# MAGIC %pip install --quiet --upgrade "databricks-sdk>=0.40"
+# MAGIC dbutils.library.restartPython()
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Parameters
 
 # COMMAND ----------
@@ -26,7 +37,11 @@ space_id = dbutils.widgets.get("space_id").strip()
 question = dbutils.widgets.get("question").strip()
 
 if not space_id:
-    raise ValueError("Set the `space_id` widget to your Genie Space's ID (see the URL of the space in the workspace UI).")
+    raise ValueError(
+        "Set the `space_id` widget to your Genie Space's ID. "
+        "Find it in the URL of the space in the workspace UI: "
+        "https://<workspace>/genie/rooms/<space_id>"
+    )
 
 print(f"Space ID: {space_id}")
 print(f"Question: {question}")
@@ -35,7 +50,7 @@ print(f"Question: {question}")
 
 # MAGIC %md
 # MAGIC ## Who is this query running as?
-# MAGIC The Genie call will execute as the notebook's identity — that's what the
+# MAGIC The Genie call executes as the notebook's identity — that's what the
 # MAGIC row filter compares against `tenant_acl.principal`.
 
 # COMMAND ----------
@@ -47,54 +62,45 @@ print(f"Running as: {me}")
 
 # MAGIC %md
 # MAGIC ## Ask Genie
-# MAGIC Uses the Conversation API via `databricks-sdk`. Polls until the message
-# MAGIC is `COMPLETED`, then prints the generated SQL and the result.
+# MAGIC `start_conversation_and_wait` returns the completed `GenieMessage`
+# MAGIC directly. The message carries its own `conversation_id`, so we don't
+# MAGIC need a wrapper.
 
 # COMMAND ----------
 
-import time
+from datetime import timedelta
 from databricks.sdk import WorkspaceClient
 
 w = WorkspaceClient()
 
 
-def ask_genie(space_id: str, question: str, conversation_id: str | None = None, timeout_s: int = 120):
-    """Ask Genie a question. Returns (message, query_result | None)."""
-    if conversation_id is None:
-        started = w.genie.start_conversation_and_wait(
-            space_id=space_id,
-            content=question,
-            timeout=__import__("datetime").timedelta(seconds=timeout_s),
-        )
-        message = started.message
-        conversation_id = started.conversation_id
-    else:
-        message = w.genie.create_message_and_wait(
-            space_id=space_id,
-            conversation_id=conversation_id,
-            content=question,
-            timeout=__import__("datetime").timedelta(seconds=timeout_s),
-        )
-
-    query_result = None
-    if message.attachments:
-        for att in message.attachments:
+def ask_genie(space_id: str, question: str, timeout_s: int = 180):
+    """Ask Genie a fresh question. Returns (sql_text, columns, rows, message)."""
+    msg = w.genie.start_conversation_and_wait(
+        space_id=space_id,
+        content=question,
+        timeout=timedelta(seconds=timeout_s),
+    )
+    sql_text, cols, rows = None, None, None
+    if msg.attachments:
+        for att in msg.attachments:
             if att.query is not None:
-                try:
-                    qr = w.genie.get_message_attachment_query_result(
-                        space_id=space_id,
-                        conversation_id=conversation_id,
-                        message_id=message.id,
-                        attachment_id=att.attachment_id,
-                    )
-                    query_result = qr.statement_response
-                    break
-                except Exception as e:
-                    print(f"  (failed to fetch query result for attachment {att.attachment_id}: {e})")
-    return message, query_result, conversation_id
+                sql_text = att.query.query
+                qr = w.genie.get_message_attachment_query_result(
+                    space_id=space_id,
+                    conversation_id=msg.conversation_id,
+                    message_id=msg.id,
+                    attachment_id=att.attachment_id,
+                )
+                if qr.statement_response and qr.statement_response.result:
+                    cols = [c.name for c in qr.statement_response.manifest.schema.columns]
+                    rows = qr.statement_response.result.data_array
+                break
+    return sql_text, cols, rows, msg
 
 
-message, query_result, conversation_id = ask_genie(space_id, question)
+sql_text, cols, rows, msg = ask_genie(space_id, question)
+print(f"Status: {msg.status}")
 
 # COMMAND ----------
 
@@ -103,20 +109,12 @@ message, query_result, conversation_id = ask_genie(space_id, question)
 
 # COMMAND ----------
 
-sql_text = None
-if message.attachments:
-    for att in message.attachments:
-        if att.query is not None:
-            sql_text = att.query.query
-            break
-
 if sql_text:
-    print("Generated SQL:\n")
     print(sql_text)
 else:
     print("Genie did not produce SQL. Message text:\n")
-    if message.attachments:
-        for att in message.attachments:
+    if msg.attachments:
+        for att in msg.attachments:
             if att.text is not None:
                 print(att.text.content)
 
@@ -129,11 +127,9 @@ else:
 
 # COMMAND ----------
 
-if query_result and query_result.result and query_result.result.data_array is not None:
-    columns = [c.name for c in query_result.manifest.schema.columns]
-    rows = query_result.result.data_array
+if rows is not None and cols is not None:
     import pandas as pd
-    df = pd.DataFrame(rows, columns=columns)
+    df = pd.DataFrame(rows, columns=cols)
     display(df)
 else:
     print("No tabular result (Genie may have responded with text only).")
