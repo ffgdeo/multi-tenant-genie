@@ -292,27 +292,60 @@ for att in msg.get("attachments", []):
 # MAGIC With your current ACL state, you should see whatever you've granted
 # MAGIC yourself in `02_demo_row_filter.sql`. The SP above can only ever see
 # MAGIC its one tenant.
+# MAGIC
+# MAGIC Uses the same REST pattern as STEP 6 above, but with the notebook
+# MAGIC user's token (no `w.genie` SDK dependency — works on any DBR version).
 
 # COMMAND ----------
 
-from datetime import timedelta
+ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+USER_TOKEN = ctx.apiToken().get()
+me_name    = ctx.userName().get()
+H_USER = {"Authorization": f"Bearer {USER_TOKEN}", "Content-Type": "application/json"}
 
-me_resp = w.genie.start_conversation_and_wait(
-    space_id=SPACE,
-    content="What is the total revenue by tenant?",
-    timeout=timedelta(seconds=180),
+r1 = requests.post(
+    f"{host}/api/2.0/genie/spaces/{SPACE}/start-conversation",
+    headers=H_USER,
+    json={"content": "What is the total revenue by tenant?"},
+    timeout=30,
 )
-for att in me_resp.attachments or []:
-    if att.query is not None:
-        qr = w.genie.get_message_attachment_query_result(
-            space_id=SPACE, conversation_id=me_resp.conversation_id,
-            message_id=me_resp.id, attachment_id=att.attachment_id,
-        )
-        sr = qr.statement_response
-        cols = [c.name for c in sr.manifest.schema.columns]
-        print(f"As {w.current_user.me().user_name}:")
-        display(pd.DataFrame(sr.result.data_array or [], columns=cols))
+r1.raise_for_status()
+conv2, mid2 = r1.json()["conversation_id"], r1.json()["message_id"]
+
+for _ in range(60):
+    rs = requests.get(
+        f"{host}/api/2.0/genie/spaces/{SPACE}/conversations/{conv2}/messages/{mid2}",
+        headers=H_USER, timeout=20,
+    )
+    rs.raise_for_status()
+    msg2 = rs.json()
+    if msg2.get("status") in ("COMPLETED", "FAILED", "ERROR", "CANCELLED"):
         break
+    time.sleep(2)
+
+print(f"As {me_name} (status={msg2.get('status')}):")
+shown = False
+for att in msg2.get("attachments", []):
+    if att.get("query"):
+        rq = requests.get(
+            f"{host}/api/2.0/genie/spaces/{SPACE}/conversations/{conv2}"
+            f"/messages/{mid2}/attachments/{att['attachment_id']}/query-result",
+            headers=H_USER, timeout=30,
+        )
+        rq.raise_for_status()
+        sr = rq.json().get("statement_response", {})
+        if "result" in sr and sr["result"].get("data_array") is not None:
+            cols = [c["name"] for c in sr["manifest"]["schema"]["columns"]]
+            display(pd.DataFrame(sr["result"]["data_array"], columns=cols))
+        else:
+            print("  (no rows — your ACL may be empty)")
+        shown = True
+        break
+if not shown:
+    # Genie returned a text-only message (e.g. "no data found")
+    for att in msg2.get("attachments", []):
+        if att.get("text"):
+            print(f"  {att['text'].get('content','')[:400]}")
 
 # COMMAND ----------
 
