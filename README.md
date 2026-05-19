@@ -1,5 +1,12 @@
 # multi-tenant-genie
 
+> **Live deployment**
+> Workspace: `https://fevm-fd-serverless-workspace.cloud.databricks.com/`
+> Genie space: `01f1538ad39d1dbc89bdd9f93ab3d3cc` — *Multi-Tenant Genie Demo — Customer Orders*
+> Schema:      `fd_serverless_workspace_catalog.demo_abac`
+> Notebooks:   `/Users/filipe.deo@databricks.com/multi-tenant-genie/notebooks/`
+> Direct link: https://fevm-fd-serverless-workspace.cloud.databricks.com/genie/rooms/01f1538ad39d1dbc89bdd9f93ab3d3cc
+
 A small, reusable demo that shows how to enforce **multi-tenant data isolation in Databricks Genie** using an **ABAC row filter** backed by a Unity Catalog ACL table.
 
 The same Genie Space, the same underlying tables, the same SQL query — but each caller (service principal or user) only sees rows for the tenants they are mapped to in an ACL table. No prompt-engineering, no per-tenant Genie Spaces, no per-tenant schemas. Isolation is enforced at the storage layer.
@@ -58,16 +65,32 @@ Asks the Genie Space a question via the Conversation API and prints the SQL + re
 ## How the row filter actually works
 
 ```sql
-CREATE OR REPLACE FUNCTION filter_by_tenant(tenant_id STRING)
+CREATE OR REPLACE FUNCTION filter_by_tenant(row_tenant_id STRING)
 RETURNS BOOLEAN
 RETURN EXISTS (
   SELECT 1 FROM tenant_acl t
-  WHERE t.tenant_id = tenant_id
+  WHERE t.tenant_id = row_tenant_id
     AND t.principal = current_user()
 );
 
 ALTER TABLE customer_orders SET ROW FILTER filter_by_tenant ON (tenant_id);
 ```
+
+> ⚠️ **Important gotcha — parameter name shadowing.** The version of this
+> function in the [original Medium article](https://medium.com/dbsql-sme-engineering/embedding-genie-api-for-a-multi-tenant-application-d307bfbfc89b)
+> names the function parameter `tenant_id`, the same as the column in
+> `tenant_acl`. In that form, `WHERE t.tenant_id = tenant_id` resolves the
+> bare `tenant_id` to the `tenant_acl.tenant_id` column (not the parameter),
+> making the predicate `column = column` — always true. The `EXISTS` then
+> short-circuits to "does the principal appear in tenant_acl at all?", and
+> any principal with at least one ACL row sees *every* row in the fact table,
+> regardless of tenant. Test it: with `(filipe, 'acme')` in the ACL, the
+> filter would let `globex`, `initech`, `umbrella` rows through too.
+>
+> This demo renames the parameter to `row_tenant_id` so the binding is
+> unambiguous. **Always pick a parameter name that does not collide with any
+> column in the function body** — applies to row filters, column masks, and
+> any UDF that does a sub-SELECT.
 
 - Function is called **once per row**, with that row's `tenant_id` value passed as the parameter.
 - Returns `true` if there exists an ACL row mapping `current_user()` (the caller) to that tenant.

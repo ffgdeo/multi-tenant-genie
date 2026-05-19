@@ -81,12 +81,20 @@ CREATE OR REPLACE TABLE tenant_acl (
 -- MAGIC %python
 -- MAGIC catalog = dbutils.widgets.get("catalog")
 -- MAGIC schema  = dbutils.widgets.get("schema")
+-- MAGIC #
+-- MAGIC # GOTCHA: the parameter MUST NOT share its name with any column in the
+-- MAGIC # tables referenced inside the function body. If we named the parameter
+-- MAGIC # `tenant_id`, then `WHERE t.tenant_id = tenant_id` would resolve the
+-- MAGIC # bare `tenant_id` to `tenant_acl.tenant_id` (the column), making the
+-- MAGIC # predicate a tautology and effectively disabling the filter. Naming it
+-- MAGIC # `row_tenant_id` makes the binding unambiguous.
+-- MAGIC #
 -- MAGIC spark.sql(f"""
--- MAGIC CREATE OR REPLACE FUNCTION {catalog}.{schema}.filter_by_tenant(tenant_id STRING)
+-- MAGIC CREATE OR REPLACE FUNCTION {catalog}.{schema}.filter_by_tenant(row_tenant_id STRING)
 -- MAGIC RETURNS BOOLEAN
 -- MAGIC RETURN EXISTS (
 -- MAGIC   SELECT 1 FROM {catalog}.{schema}.tenant_acl t
--- MAGIC   WHERE t.tenant_id = tenant_id
+-- MAGIC   WHERE t.tenant_id = row_tenant_id
 -- MAGIC     AND t.principal = current_user()
 -- MAGIC )
 -- MAGIC """)
